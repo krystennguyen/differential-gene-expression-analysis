@@ -1,0 +1,475 @@
+---
+title: "Particulate Matter effect on Mouse Model of Cardiac Failure: Lung and Heart Left Ventricle"
+author: "Krysten Nguyen and Bindu Koyi"
+output: github_document
+---
+## Reference Paper
+https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE17478
+
+## Load packages
+```{r: load initial packages}
+install.packages("BiocManager")
+BiocManager::install("GEOquery")
+library(GEOquery)
+library(BiocManager)
+```
+## Load data
+```{r}
+gse<-GEOquery::getGEO("GSE17478")
+dataset = gse$GSE17478_series_matrix.txt.gz
+
+```
+
+Get information on samples and store in expdesign
+```{r}
+sample = dataset$geo_accession
+tissue = dataset$source_name_ch1
+dataset$treatment_protocol_ch1
+# condense treatment description
+treatment = rep(c(rep("PBS",3), rep("PM",3)), 4)
+dataset$`genotype:ch1`
+# condense genotype description
+genotype = c(rep("WT", 6), rep("dnCREB", 6), rep("WT", 6), rep("dnCREB", 6))
+
+expdesign = data.frame(sample, genotype, tissue, treatment)
+row.names(expdesign) = expdesign$sample
+expdesign
+```
+
+
+
+## 1. Normalization
+Using affy package to normalize Affymetrix microarray data
+```{r}
+BiocManager::install("affy")
+library(affy)
+```
+Getting raw Affymetrix data from NCBI GEO's website
+```{r}
+download.file("https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE17478&format=file","GSE17478_RAW.tar")
+untar("GSE17478_RAW.tar")
+```
+Getting a list of files to be normalized:
+```{r}
+cel_files = dir(path=".", pattern=".CEL.gz")
+cel_files
+```
+
+```{r}
+# read in Affymetric microarray data files
+affy_batch = affy::ReadAffy(filenames = cel_files)
+# MAS5 calls to indicate probe intensities in data
+affy_calls = affy::mas5calls(affy_batch)
+```
+
+
+
+```{r}
+# graph histogram of Present (P) calls and keep the probesets with "P" calls >= 10
+affy_calls_values = exprs(affy_calls)
+totalP = rowSums(affy_calls_values=="P")
+hist(totalP, )
+keep = rownames(affy_calls_values[totalP>=10,])
+```
+We use RMA for normalization. RMA is more robust than other normalization methods for Affymetrix microarray, including MAS5.
+- RMA incorporates background correction and quantile normalization that equalizes data distribution across arrays
+- RMA uses median polish procedure to calculate summary values, making it less sensitive to outliers
+- RMA provides log transformed expression values
+
+```{r} 
+library(affy)
+rma_eset = rma(affy_batch, subset = keep)
+```
+
+```{r}
+# get normalized expression value
+rma_expvalues=exprs(rma_eset)
+
+head(rma_expvalues)
+dim(rma_expvalues)
+```
+
+Confirm the data is normalized with boxplot:
+```{r}
+boxplot(rma_expvalues)
+```
+
+
+
+Figure 1. Boxplots of RMA-normalized expression intensities for 24 chips highlight consistency post-normalization.
+
+
+
+```{r}
+hist(rma_expvalues, breaks=100)
+abline(v = 5, col ="red")
+```
+
+Figure 2. Histogram of Distribution of Normalized Gene Expression Values with Low Expression Cutoff. 
+
+
+
+```{r}
+# filter out values <= 2.3
+lowexplogic = rma_expvalues<=5
+lowexpsum = apply(lowexplogic,1,sum)
+rma_expvalues = rma_expvalues[lowexpsum<5,]
+dim(rma_expvalues)
+
+```
+
+## 2. Differentially expressed genes
+
+The study has 3 factors: tissue (Lung and Left Ventricle) and treatment ( treated with PBS versus particulate matters/PM), genotype (wildtype and CD-1 dominate negative). We will perform ANOVA analysis with aov to identify differentially expressed genes due to tissue, PM, or interaction of tissue and PM
+```{r}
+# function to apply anova to each row
+expgroupnames = c("expdesign$genotype", "expdesign$tissue", "expdesign$treatment", "expdesign$genotype:expdesign$tissue",          "expdesign$genotype:expdesign$treatment"  ,              
+"expdesign$tissue:expdesign$treatment"  ,          
+"expdesign$genotype:expdesign$tissue:expdesign$treatment")
+
+myaov = function(expvalues,expgroup1,expgroup2,expgroup3){
+  myaov =  aov(expvalues ~ expdesign$genotype * expdesign$tissue *expdesign$treatment)
+  aovsum = summary(myaov)
+  pvals = aovsum[[1]][["Pr(>F)"]][1:7]
+  return (pvals)
+}
+
+```
+
+```{r}
+anovapvalues = apply(rma_expvalues, 1, myaov, expdesign$genotype, expdesign$tissue, expdesign$treatment)
+anovapvalues = t(anovapvalues)
+colnames(anovapvalues) = expgroupnames
+head(anovapvalues)
+
+```
+
+
+Adjust p values for multiple hypothesis testing
+```{r}
+# perform fdr correction on p-values
+
+padj = p.adjust(anovapvalues[,3], method = "fdr")
+sum(padj<0.05)
+head(padj)
+
+```
+
+Identify genes that have a significant fold change
+```{r}
+# function calculating lfc and return the max lfc out of 3 expgroups
+mklogfc = function(expvalues, expgroup1, expgroup2, expgroup3) {
+  # expgroup1mean = diff(tapply(expvalues, expgroup1, mean))
+  # expgroup2mean = diff(tapply(expvalues, expgroup2, mean))
+  expgroup3mean = diff(tapply(expvalues, expgroup3, mean))
+
+  return( expgroup3mean)
+}
+
+```
+
+```{r}
+logfcvalues = apply(rma_expvalues, 1, mklogfc, 
+                    expdesign$genotype,expdesign$tissue,expdesign$treatment)
+
+
+head(logfcvalues)
+sum(abs(logfcvalues) >= log2(1.5))
+
+```
+
+```{r}
+# get differentially expressed genes
+
+diffexpgenes = rma_expvalues[abs(logfcvalues) >= log2(1.5) & padj < 0.05,]
+colnames(diffexpgenes) = sub("\\..*", "", colnames(diffexpgenes))
+head(diffexpgenes)
+dim(diffexpgenes)
+```
+
+```{r}
+plot(logfcvalues, -log10(padj))
+```
+
+## 3. Cluster differentially expressed genes
+Hierarchical clustering
+```{r}
+diffexpval.cor = cor(t(diffexpgenes))
+diffexpval.dist = as.dist(1-diffexpval.cor)
+diffexpval.clust = hclust(diffexpval.dist, method = "average")
+plot(diffexpval.clust)
+```
+
+Figure 3. Cluster dendrogram reveals some dominant and other extremely short groups. 
+
+
+
+```{r}
+library(cluster)
+# look for optimal groups
+avg_sil_width = numeric()
+for(i in 2:20){
+  tempclust = cutree(diffexpval.clust, k =i)
+  avg_sil_width[i] = mean(silhouette(tempclust, diffexpval.dist)[, "sil_width"] )
+}
+
+plot(avg_sil_width)
+```
+
+Figure 4. Average silhouette width by index. 
+
+
+
+From the silhouette width plot, 5 groups look like the optimal clustering
+```{r}
+diffexp.clust.groups = cutree(diffexpval.clust, k=4)
+table(diffexp.clust.groups)
+```
+
+```{r}
+expdesign
+```
+## 4. Heatmap
+- Heatmap for all differentially expressed genes
+```{r}
+library(pheatmap)
+rownames(expdesign) = expdesign$sample
+
+clustergenes = diffexpgenes
+pheatmap(clustergenes,
+         annotation_col = expdesign[,2:4],
+         cluster_rows = TRUE, 
+         cluster_cols = FALSE,
+         show_rownames = FALSE,
+         scale = "row",
+         main = "Heat Map for Differentially Expressed Genes"
+         
+      
+)
+
+
+
+```
+
+- Heatmap for cluster 1.
+```{r}
+
+cluster1genes = diffexpgenes[diffexp.clust.groups==1,]
+
+pheatmap(cluster1genes,
+         annotation_col = expdesign[,2:4],
+         cluster_rows = TRUE, 
+         cluster_cols = FALSE,
+         show_rownames = FALSE,
+         scale = "row",
+         main = "Cluster 1 Heat Map"
+      
+)
+
+
+# PBS vs PM to lung tissue
+
+```
+
+- Heatmap for cluster 2.
+```{r}
+cluster2genes = diffexpgenes[diffexp.clust.groups==4,]
+
+pheatmap(cluster2genes,
+          annotation_col = expdesign[,2:4],
+         cluster_rows = TRUE, 
+         cluster_cols = FALSE,
+         show_rownames = FALSE,
+         scale = "row",
+         main = "Cluster 4 Heat Map"
+      
+)
+
+
+
+
+
+```
+
+
+## 5. Go-term analysis 
+We perform Go-term analysis to identify the biological processes that the differentially expressed genes are involved with, and whether these processes are a result of exposure to particulate matter (PM). We will analyze Go-term on all differentially expressed genes, and those in cluster 1 and 2.
+
+
+We use annotation package: mouse4302.db
+https://bioconductor.org/packages/3.18/data/annotation/html/mouse4302.db.html
+```{r}
+BiocManager::install("GOstats")
+BiocManager::install("GO.db")
+BiocManager::install("Category")
+BiocManager::install("org.Hs.eg.db")
+
+```
+```{r}
+library(GOstats)
+library(GO.db)
+library(Category)
+library(org.Hs.eg.db)
+library(dplyr)
+```
+
+
+```{r}
+BiocManager::install("mouse4302.db")
+library(mouse4302.db)
+```
+```{r}
+library(AnnotationDbi)
+library(annotate)
+```
+```{r}
+columns(mouse4302.db)
+keytypes(mouse4302.db)
+
+```
+
+```{r}
+universeID = AnnotationDbi::select(mouse4302.db, 
+      keys = rownames(rma_expvalues),
+      columns = c("ENTREZID", "ONTOLOGY"))
+universeID = dplyr::distinct(universeID, ENTREZID, .keep_all = TRUE)
+
+genelistID = AnnotationDbi::select(mouse4302.db, 
+       keys = rownames(diffexpgenes),
+       columns = c("ENTREZID", "ONTOLOGY"))
+genelistID = dplyr::distinct(genelistID, ENTREZID, .keep_all = TRUE)
+```
+
+- GO-term enrichment analysis on all differentially expressed genes
+```{r}
+
+params = new("GOHyperGParams",
+             geneIds = genelistID$ENTREZID,
+             universeGeneIds= universeID$ENTREZID,
+             annotation = "mouse4302.db",
+             ontology = "BP",
+             pvalueCutoff=0.001,
+            conditional=T,
+            testDirection="over")
+          
+```
+``` {r}
+overRepresented=hyperGTest(params)
+
+
+```
+```{r} 
+GOtermTable = summary(overRepresented)
+GOtermTable = GOtermTable[order(-GOtermTable$Count),]
+GOtermTable
+```
+```{r}
+# Plot GO term by term, count, p-value
+library(ggplot2)
+GOtermTable = GOtermTable[1:20,]
+
+ggplot(GOtermTable, aes(y = reorder(GOtermTable$Term, GOtermTable$Count), x = GOtermTable$Count, fill = GOtermTable$Pvalue)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_gradient(low = "blue", high = "red") + 
+  labs(title = "Top 20 GO Terms",
+       x = "Count",
+       y = "",
+       ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+   guides(fill = guide_colorbar(title = "P-Value"))
+
+
+
+
+
+```
+
+- GO-term enrichment analysis on cluster group 1
+```{r}
+genelistcluster1ID = AnnotationDbi::select(mouse4302.db, 
+       keys = rownames(diffexpgenes[diffexp.clust.groups==1,]),
+       columns = c("ENTREZID", "ALIAS"))
+genelistcluster1ID = dplyr::distinct(genelistcluster1ID, ENTREZID, .keep_all = TRUE)
+
+params = new("GOHyperGParams",
+             geneIds = genelistcluster1ID$ENTREZID,
+             universeGeneIds= universeID$ENTREZID,
+             annotation = "mouse4302.db",
+             ontology = "BP",
+             pvalueCutoff=0.001,
+            conditional=T,
+            testDirection="over")
+
+overRepresented=hyperGTest(params)
+
+summary(overRepresented)
+```
+```{r} 
+GOtermTable = summary(overRepresented)
+GOtermTable = GOtermTable[order(-GOtermTable$Count),]
+GOtermTable
+```
+```{r}
+# Plot GO term by term, count, p-value
+library(ggplot2)
+
+GOtermTable = GOtermTable[1:20,]
+ggplot(GOtermTable, aes(y = reorder(GOtermTable$Term, GOtermTable$Count), x = GOtermTable$Count, fill = GOtermTable$Pvalue)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_gradient(low = "blue", high = "red") + 
+  labs(title = "Cluster 1 GO Term Count and P-Value",
+       x = "Count",
+       y = "",
+       ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+   guides(fill = guide_colorbar(title = "P-Value"))
+
+
+```
+
+- GO-term enrichment analysis on cluster group 2
+```{r}
+genelistcluster2ID = AnnotationDbi::select(mouse4302.db, 
+       keys = rownames(diffexpgenes[diffexp.clust.groups==4,]),
+       columns = c("ENTREZID", "ALIAS"))
+genelistcluster2ID = dplyr::distinct(genelistcluster2ID, ENTREZID, .keep_all = TRUE)
+
+params = new("GOHyperGParams",
+             geneIds = genelistcluster2ID$ENTREZID,
+             universeGeneIds= universeID$ENTREZID,
+             annotation = "mouse4302.db",
+             ontology = "BP",
+             pvalueCutoff=0.001,
+            conditional=T,
+            testDirection="over")
+
+overRepresented=hyperGTest(params)
+
+summary(overRepresented)
+```
+```{r} 
+GOtermTable = summary(overRepresented)
+GOtermTable = GOtermTable[order(-GOtermTable$Count),]
+GOtermTable
+```
+```{r}
+# Plot GO term by term, count, p-value
+library(ggplot2)
+
+GOtermTable = GOtermTable[1:20,]
+ggplot(GOtermTable, aes(y = reorder(GOtermTable$Term, GOtermTable$Count), x = GOtermTable$Count, fill = GOtermTable$Pvalue)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_gradient(low = "blue", high = "red") + 
+  labs(title = "Cluster 4 GO Term Count and P-Value",
+       x = "Count",
+       y = "",
+       ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+   guides(fill = guide_colorbar(title = "P-Value"))
+
+
+
+```
