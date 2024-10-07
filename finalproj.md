@@ -547,8 +547,8 @@ plot(avg_sil_width)
 
 Figure 4. Average silhouette width by index.
 
-From the silhouette width plot, 5 groups look like the optimal
-clustering
+From the silhouette width plot, 4 groups look like the optimal
+clustering, with 2 dominant clusters: 1 and 4
 
 ``` r
 diffexp.clust.groups = cutree(diffexpval.clust, k=4)
@@ -634,7 +634,7 @@ pheatmap(cluster1genes,
 # PBS vs PM to lung tissue
 ```
 
-- Heatmap for cluster 2.
+- Heatmap for cluster 4.
 
 ``` r
 cluster2genes = diffexpgenes[diffexp.clust.groups==4,]
@@ -1161,7 +1161,7 @@ ggplot(GOtermTable, aes(y = reorder(GOtermTable$Term, GOtermTable$Count), x = GO
 
 ![](finalproj_files/figure-gfm/unnamed-chunk-39-1.png)<!-- -->
 
-- GO-term enrichment analysis on cluster group 2
+- GO-term enrichment analysis on cluster group 4
 
 ``` r
 genelistcluster2ID = AnnotationDbi::select(mouse4302.db, 
